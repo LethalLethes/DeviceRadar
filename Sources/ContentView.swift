@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Security
 
 // MARK: - Model
 
@@ -31,25 +32,23 @@ struct DeviceCollector {
 
         let batteryState: String
         switch device.batteryState {
-        case .charging: batteryState = "Şarj olunur"
-        case .full:     batteryState = "Dolu"
+        case .charging:  batteryState = "Şarj olunur"
+        case .full:      batteryState = "Dolu"
         case .unplugged: batteryState = "Batareya"
-        default:        batteryState = "Bilinmir"
+        default:         batteryState = "Bilinmir"
         }
 
-        let totalDisk = totalDiskSpace()
-        let freeDisk  = freeDiskSpace()
-
         let signals: [Signal] = [
-            Signal(name: "Model",        value: device.model,               icon: "iphone"),
-            Signal(name: "Adı",          value: device.name,                icon: "person.crop.circle"),
-            Signal(name: "iOS versiyası",value: UIDevice.current.systemVersion, icon: "gear"),
-            Signal(name: "CPU nüvəsi",   value: "\(ProcessInfo.processInfo.processorCount)", icon: "cpu"),
-            Signal(name: "RAM",          value: ramString(),                icon: "memorychip"),
-            Signal(name: "Disk (Cəmi)",  value: totalDisk,                  icon: "internaldrive"),
-            Signal(name: "Disk (Boş)",   value: freeDisk,                   icon: "internaldrive.fill"),
-            Signal(name: "Batareya",     value: "\(batteryLevel) · \(batteryState)", icon: "battery.75"),
-            Signal(name: "Uptime",       value: uptimeString(),             icon: "clock"),
+            Signal(name: "Model",          value: device.model,                          icon: "iphone"),
+            Signal(name: "Adı",            value: device.name,                           icon: "person.crop.circle"),
+            Signal(name: "iOS versiyası",  value: device.systemVersion,                  icon: "gear"),
+            Signal(name: "CPU nüvəsi",     value: "\(ProcessInfo.processInfo.processorCount)", icon: "cpu"),
+            Signal(name: "RAM",            value: ramString(),                            icon: "memorychip"),
+            Signal(name: "Disk (Cəmi)",    value: totalDiskSpace(),                       icon: "internaldrive"),
+            Signal(name: "Disk (Boş)",     value: freeDiskSpace(),                        icon: "internaldrive.fill"),
+            Signal(name: "Batareya",       value: "\(batteryLevel) · \(batteryState)",   icon: "battery.75"),
+            Signal(name: "Sistem uptime",  value: uptimeString(),                         icon: "clock"),
+            Signal(name: "İlk aktivasiya", value: firstActivationDate(),                  icon: "calendar.badge.clock"),
         ]
 
         return Category(title: "Cihaz", icon: "iphone.gen1", color: .blue, signals: signals)
@@ -78,6 +77,37 @@ struct DeviceCollector {
         let minutes = (Int(uptime) % 3600) / 60
         return "\(hours)s \(minutes)d"
     }
+
+    private static func firstActivationDate() -> String {
+        let key = "device_first_launch"
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        if status == errSecSuccess,
+           let data = result as? Data,
+           let dateStr = String(data: data, encoding: .utf8) {
+            return dateStr
+        }
+
+        let now = DateFormatter.localizedString(
+            from: Date(), dateStyle: .medium, timeStyle: .short
+        )
+        let saveQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: now.data(using: .utf8)!,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+        SecItemAdd(saveQuery as CFDictionary, nil)
+        return now + " (bu gün)"
+    }
 }
 
 struct ScreenCollector {
@@ -86,9 +116,9 @@ struct ScreenCollector {
         let bounds = screen.nativeBounds
 
         let signals: [Signal] = [
-            Signal(name: "Piksel",        value: "\(Int(bounds.width))×\(Int(bounds.height))", icon: "rectangle"),
-            Signal(name: "Miqyas",        value: "\(screen.nativeScale)x",                     icon: "arrow.up.left.and.arrow.down.right"),
-            Signal(name: "Parlaqlıq",     value: String(format: "%.0f%%", screen.brightness * 100), icon: "sun.max"),
+            Signal(name: "Piksel",    value: "\(Int(bounds.width))×\(Int(bounds.height))", icon: "rectangle"),
+            Signal(name: "Miqyas",    value: "\(screen.nativeScale)x",                     icon: "arrow.up.left.and.arrow.down.right"),
+            Signal(name: "Parlaqlıq",value: String(format: "%.0f%%", screen.brightness * 100), icon: "sun.max"),
         ]
 
         return Category(title: "Ekran", icon: "rectangle.on.rectangle", color: .purple, signals: signals)
@@ -102,11 +132,11 @@ struct LocaleCollector {
         let calendar = Calendar.current
 
         let signals: [Signal] = [
-            Signal(name: "Dil",        value: Locale.preferredLanguages.first ?? "?", icon: "globe"),
-            Signal(name: "Region",     value: locale.region?.identifier ?? "?",       icon: "mappin"),
-            Signal(name: "Saat qurşağı", value: "\(tz.identifier) (UTC\(tzOffset(tz)))", icon: "clock.badge"),
-            Signal(name: "Təqvim",     value: calendar.identifier.debugDescription,   icon: "calendar"),
-            Signal(name: "Para",       value: locale.currency?.identifier ?? "?",     icon: "banknote"),
+            Signal(name: "Dil",          value: Locale.preferredLanguages.first ?? "?",       icon: "globe"),
+            Signal(name: "Region",       value: locale.region?.identifier ?? "?",             icon: "mappin"),
+            Signal(name: "Saat qurşağı", value: "\(tz.identifier) (UTC\(tzOffset(tz)))",      icon: "clock.badge"),
+            Signal(name: "Təqvim",       value: "\(calendar.identifier)",                      icon: "calendar"),
+            Signal(name: "Para",         value: locale.currency?.identifier ?? "?",            icon: "banknote"),
         ]
 
         return Category(title: "Dil & Region", icon: "globe.europe.africa", color: .green, signals: signals)
@@ -181,7 +211,6 @@ struct ContentView: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
-
                         ForEach(vm.categories) { category in
                             CategorySection(category: category)
                         }
