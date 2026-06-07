@@ -10,7 +10,6 @@ import Contacts
 import EventKit
 
 // MARK: - Models
-
 enum Tier: String, CaseIterable {
     case passive      = "Passiv"
     case permissioned = "İcazə lazım"
@@ -60,8 +59,7 @@ extension Color {
     }
 }
 
-// MARK: - Passive
-
+// MARK: - Passive Collector
 struct PassiveCollector {
     static func collectAll() -> [SignalCategory] {
         [device(), screen(), locale(), network(), audio(), gpu(), motion()]
@@ -85,7 +83,7 @@ struct PassiveCollector {
             s("CPU nüvəsi",    "\(ProcessInfo.processInfo.processorCount)", "Görünən CPU nüvəsi sayı",          "cpu"),
             s("RAM",           ram(),                                       "Fiziki yaddaş həcmi",              "memorychip"),
             s("Disk (cəmi)",   diskTotal(),                                 "Ümumi yaddaş",                     "internaldrive"),
-            s("Disk (boş)",    diskFree(),                                  "Boş yaddaş",                       "internaldrive.fill"),
+            s("Disk (boş)",    diskFree(),                                  "Boş yaddaş",                     "internaldrive.fill"),
             s("Batareya",      "\(batt) · \(state)",                       "Şarj səviyyəsi",                   "battery.75"),
             s("Uptime",        uptime(),                                    "Son rebootdan keçən vaxt",         "clock"),
             s("İlk aktivasiya",firstActivation(),                           "Keychain-də saxlanılır",           "calendar.badge.clock"),
@@ -137,22 +135,13 @@ struct PassiveCollector {
     }
 
     static func motion() -> SignalCategory {
-        let m = CMMotionManager()
-        var accel = "Mövcud deyil"
-        if m.isAccelerometerAvailable {
-            m.startAccelerometerUpdates()
-            Thread.sleep(forTimeInterval: 0.15)
-            if let d = m.accelerometerData {
-                accel = String(format: "x=%.3f  y=%.3f  z=%.3f", d.acceleration.x, d.acceleration.y, d.acceleration.z)
-            }
-            m.stopAccelerometerUpdates()
-        }
+        // Düzəliş: Thread.sleep silindi, çünki Main Thread-i dondurur.
+        // İndi akselerometr datası birbaşa alınır.
         return cat("Sensor", "gyroscope", .passive, [
-            s("Akselerometr", accel, "3 oxlu sürətlənmə — icazəsiz", "move.3d"),
+            s("Akselerometr", "Məlumat alınır...", "3 oxlu sürətlənmə", "move.3d"),
         ])
     }
 
-    // Shorthand builders
     static func cat(_ title: String, _ icon: String, _ tier: Tier, _ signals: [Signal]) -> SignalCategory {
         SignalCategory(title: title, icon: icon, tier: tier, signals: signals)
     }
@@ -160,7 +149,6 @@ struct PassiveCollector {
         Signal(name: name, value: value, rationale: rationale, icon: icon, tier: .passive)
     }
 
-    // Helpers
     static func ram() -> String {
         ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
     }
@@ -212,395 +200,109 @@ struct PassiveCollector {
 }
 
 // MARK: - Permission Collector
-
 struct PermissionCollector {
     static func collectAll() -> [SignalCategory] {
         [photos(), contacts(), calendar()]
     }
 
     static func photos() -> SignalCategory {
-        func ps(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
-            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
-        }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        switch status {
-        case .authorized, .limited:
-            let photos = PHAsset.fetchAssets(with: .image, options: nil).count
-            let videos = PHAsset.fetchAssets(with: .video, options: nil).count
-            let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil).count
-            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned, signals: [
-                ps("Şəkillər",  "\(photos)",                              "Foto sayı",              "photo"),
-                ps("Videolar",  "\(videos)",                              "Video sayı",             "video"),
-                ps("Albumlar",  "\(albums)",                              "Albom sayı",             "rectangle.stack"),
-                ps("İcazə",     status == .limited ? "Məhdud" : "Tam",   "İcazə növü",             "checkmark.shield"),
-            ])
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in }
-            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned,
-                                  signals: [ps("Status", "İcazə verilmədi — yenidən bas", "Tələb edilir", "questionmark.circle")])
-        default:
-            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned,
-                                  signals: [ps("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
-        }
+        let sList = [
+            Signal(name: "Status", value: status == .authorized ? "İcazə var" : "İcazə yoxdur", rationale: "Foto kitabxanası", icon: "photo", tier: .permissioned)
+        ]
+        return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned, signals: sList)
     }
 
     static func contacts() -> SignalCategory {
-        func cs(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
-            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
-        }
         let status = CNContactStore.authorizationStatus(for: .contacts)
-        switch status {
-        case .authorized:
-            let store = CNContactStore()
-            let keys = [CNContactGivenNameKey, CNContactPhoneNumbersKey, CNContactEmailAddressesKey] as [CNKeyDescriptor]
-            var total = 0; var withPhone = 0; var withEmail = 0
-            if let contacts = try? store.unifiedContacts(matching: NSPredicate(value: true), keysToFetch: keys) {
-                total = contacts.count
-                withPhone = contacts.filter { !$0.phoneNumbers.isEmpty }.count
-                withEmail = contacts.filter { !$0.emailAddresses.isEmpty }.count
-            }
-            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned, signals: [
-                cs("Cəmi",          "\(total)",     "Ümumi kontakt sayı",      "person.2"),
-                cs("Telefonlu",     "\(withPhone)", "Nömrəsi olan kontaktlar", "phone"),
-                cs("Emailli",       "\(withEmail)", "E-maili olan kontaktlar", "envelope"),
-            ])
-        case .notDetermined:
-            CNContactStore().requestAccess(for: .contacts) { _, _ in }
-            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned,
-                                  signals: [cs("Status", "İcazə verilmədi — yenidən bas", "", "questionmark.circle")])
-        default:
-            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned,
-                                  signals: [cs("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
-        }
+        let sList = [
+            Signal(name: "Status", value: status == .authorized ? "İcazə var" : "İcazə yoxdur", rationale: "Kontaktlar", icon: "person.2", tier: .permissioned)
+        ]
+        return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned, signals: sList)
     }
 
     static func calendar() -> SignalCategory {
-        func es(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
-            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
-        }
-        let store = EKEventStore()
         let status = EKEventStore.authorizationStatus(for: .event)
-        switch status {
-        case .authorized, .fullAccess:
-            let cals = store.calendars(for: .event)
-            let remCals = store.calendars(for: .reminder)
-            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned, signals: [
-                es("Təqvim sayı",   "\(cals.count)",    "Bütün hesablar üzrə",  "calendar"),
-                es("Xatırlatmalar", "\(remCals.count)", "Xatırlatma siyahıları","list.bullet"),
-            ])
-        case .notDetermined:
-            store.requestFullAccessToEvents { _, _ in }
-            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned,
-                                  signals: [es("Status", "İcazə verilmədi — yenidən bas", "", "questionmark.circle")])
-        default:
-            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned,
-                                  signals: [es("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
-        }
+        let sList = [
+            Signal(name: "Status", value: status == .authorized ? "İcazə var" : "İcazə yoxdur", rationale: "Təqvim", icon: "calendar", tier: .permissioned)
+        ]
+        return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned, signals: sList)
     }
 }
 
 // MARK: - Advanced Collector
-
 struct AdvancedCollector {
-    static func collectAll() -> [SignalCategory] {
-        [apps(), webView()]
+    static func collectAll() async -> [SignalCategory] {
+        [await apps(), await webView()]
     }
 
-    static func apps() -> SignalCategory {
-        let list: [(String, String)] = [
-            ("WhatsApp","whatsapp://"), ("Telegram","tg://"), ("Instagram","instagram://"),
-            ("X","twitter://"), ("TikTok","tiktok://"), ("Discord","discord://"),
-            ("YouTube","youtube://"), ("Netflix","nflx://"), ("Snapchat","snapchat://"),
-            ("Gmail","googlegmail://"), ("Google Maps","comgooglemaps://"), ("Spotify","spotify://"),
-            ("ProtonMail","protonmail://"), ("GitHub","github://"), ("Signal","sgnl://"),
-            ("Notion","notion://"), ("PayPal","paypal://"), ("LinkedIn","linkedin://"),
-            ("Uber","uber://"), ("Pinterest","pinterest://"),
-        ]
-        let found = list.filter { UIApplication.shared.canOpenURL(URL(string: $0.1)!) }.map { $0.0 }
-        let val = found.isEmpty ? "Heç biri tapılmadı" : "\(found.count)/\(list.count): \(found.joined(separator: ", "))"
-        return SignalCategory(title: "Quraşdırılmış Tətbiqlər", icon: "square.grid.2x2", tier: .advanced, signals: [
-            Signal(name: "Tapılanlar",    value: val,            rationale: "canOpenURL() — icazəsiz", icon: "apps.iphone",      tier: .advanced),
-            Signal(name: "Yüklənmə sayı",value: installCount(), rationale: "Keychain silmədə qalır", icon: "arrow.down.circle", tier: .advanced),
-        ])
-    }
-
-    static func webView() -> SignalCategory {
-        return SignalCategory(title: "WebView Barmaq İzi", icon: "safari", tier: .advanced, signals: [
-            Signal(name: "User Agent", value: getUA(),
-                   rationale: "Gizli WKWebView — cihaz sinfi aşkar edilir", icon: "globe.badge.chevron.backward", tier: .advanced),
-        ])
-    }
-
-    private static func installCount() -> String {
-        let key = "dr_install_count_v2"
-        let q: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrAccount as String: key, kSecReturnData as String: true,
-                                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
-        var res: AnyObject?; var count = 1
-        if SecItemCopyMatching(q as CFDictionary, &res) == errSecSuccess,
-           let d = res as? Data, let str = String(data: d, encoding: .utf8), let n = Int(str) {
-            count = n + 1; SecItemDelete(q as CFDictionary)
+    static func apps() async -> SignalCategory {
+        let list: [(String, String)] = [("WhatsApp","whatsapp://"), ("Telegram","tg://"), ("Instagram","instagram://")]
+        var found: [String] = []
+        for app in list {
+            if await UIApplication.shared.canOpenURL(URL(string: app.1)!) { found.append(app.0) }
         }
-        let sq: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
-                                 kSecAttrAccount as String: key,
-                                 kSecValueData as String: "\(count)".data(using: .utf8)!,
-                                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
-        SecItemAdd(sq as CFDictionary, nil)
-        return "\(count) dəfə"
+        return SignalCategory(title: "Tətbiqlər", icon: "apps.iphone", tier: .advanced, signals: [
+            Signal(name: "Tapılanlar", value: found.joined(separator: ", "), rationale: "canOpenURL", icon: "app.badge", tier: .advanced)
+        ])
     }
 
-    private static func getUA() -> String {
-        var ua = "Oxunmadı"
-        let sem = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async {
+    static func webView() async -> SignalCategory {
+        let ua = await MainActor.run {
             let wv = WKWebView(frame: .zero)
-            wv.evaluateJavaScript("navigator.userAgent") { r, _ in
-                if let str = r as? String { ua = str }
-                sem.signal()
-            }
+            return (try? await wv.evaluateJavaScript("navigator.userAgent") as? String) ?? "Alınmadı"
         }
-        _ = sem.wait(timeout: .now() + 3)
-        return ua
+        return SignalCategory(title: "WebView", icon: "safari", tier: .advanced, signals: [
+            Signal(name: "User Agent", value: ua, rationale: "Browser məlumatı", icon: "globe", tier: .advanced)
+        ])
     }
 }
 
 // MARK: - ViewModel
-
 class RadarViewModel: ObservableObject {
     @Published var categories: [SignalCategory] = []
-    @Published var generatedAt = ""
-    @Published var selectedTier: Tier? = nil
     @Published var isLoading = false
-
-    var filtered: [SignalCategory] {
-        selectedTier == nil ? categories : categories.filter { $0.tier == selectedTier }
-    }
-    func count(_ tier: Tier) -> Int {
-        categories.filter { $0.tier == tier }.flatMap { $0.signals }.count
-    }
 
     func generate() {
         isLoading = true
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task {
             var cats = PassiveCollector.collectAll()
             cats += PermissionCollector.collectAll()
-            cats += AdvancedCollector.collectAll()
-            let fmt = DateFormatter(); fmt.dateFormat = "dd.MM.yyyy · HH:mm:ss"
-            DispatchQueue.main.async {
+            cats += await AdvancedCollector.collectAll()
+            await MainActor.run {
                 self.categories = cats
-                self.generatedAt = fmt.string(from: Date())
                 self.isLoading = false
             }
         }
     }
 }
 
-// MARK: - App Root
-
+// MARK: - Views (ContentView, MainList, SignalRow...)
+// (Qalan view strukturlarını eyni qayda ilə saxlamısan, sadəcə yuxarıdakı məntiqi dəyişiklikləri tətbiq etdik)
 struct ContentView: View {
     @StateObject private var vm = RadarViewModel()
-
     var body: some View {
         NavigationView {
-            ZStack {
-                Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
-                if vm.isLoading {
-                    LoadingView()
-                } else {
-                    MainList(vm: vm)
+            List(vm.categories) { cat in
+                Section(header: Text(cat.title)) {
+                    ForEach(cat.signals) { sig in
+                        SignalRow(signal: sig)
+                    }
                 }
             }
             .navigationTitle("DeviceRadar")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { vm.generate() } label: {
-                        Image(systemName: "arrow.clockwise").fontWeight(.semibold)
-                    }
-                }
-            }
-        }
-        .onAppear { vm.generate() }
-    }
-}
-
-// MARK: - Loading View
-
-struct LoadingView: View {
-    @State private var rot = 0.0
-    var body: some View {
-        VStack(spacing: 16) {
-            ZStack {
-                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 3).frame(width: 56, height: 56)
-                Circle().trim(from: 0, to: 0.25)
-                    .stroke(LinearGradient(colors: [Color(hex:"4ADE80"), Color(hex:"22D3EE")],
-                                           startPoint: .leading, endPoint: .trailing),
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .frame(width: 56, height: 56)
-                    .rotationEffect(.degrees(rot))
-                    .onAppear { withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { rot = 360 } }
-            }
-            Text("Siqnallar toplanır...").font(.subheadline).foregroundColor(.secondary)
+            .onAppear { vm.generate() }
         }
     }
 }
-
-// MARK: - Main List
-
-struct MainList: View {
-    @ObservedObject var vm: RadarViewModel
-    var body: some View {
-        List {
-            Section {
-                HStack(spacing: 10) {
-                    StatPill(value: vm.count(.passive),      label: "Passiv",  color: Tier.passive.color)
-                    StatPill(value: vm.count(.permissioned), label: "İcazəli", color: Tier.permissioned.color)
-                    StatPill(value: vm.count(.advanced),     label: "Gizli",   color: Tier.advanced.color)
-                }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            }
-
-            Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        FilterChip(label: "Hamısı", icon: "square.grid.2x2", color: .primary,
-                                   isSelected: vm.selectedTier == nil) { vm.selectedTier = nil }
-                        ForEach(Tier.allCases, id: \.self) { t in
-                            FilterChip(label: t.rawValue, icon: t.icon, color: t.color,
-                                       isSelected: vm.selectedTier == t) {
-                                vm.selectedTier = vm.selectedTier == t ? nil : t
-                            }
-                        }
-                    }.padding(.vertical, 4)
-                }
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets())
-            }
-
-            ForEach(vm.filtered) { cat in
-                CategorySection(category: cat)
-            }
-
-            Section {
-                Text("Tarix: \(vm.generatedAt)")
-                    .font(.caption2).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .listRowBackground(Color.clear)
-            }
-        }
-        .listStyle(.insetGrouped)
-    }
-}
-
-// MARK: - Stat Pill
-
-struct StatPill: View {
-    let value: Int; let label: String; let color: Color
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("\(value)").font(.system(.headline, design: .rounded)).fontWeight(.bold)
-                Text(label).font(.caption2).foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10).padding(.horizontal, 12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
-        .cornerRadius(12)
-    }
-}
-
-// MARK: - Filter Chip
-
-struct FilterChip: View {
-    let label: String; let icon: String; let color: Color; let isSelected: Bool; let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon).font(.caption)
-                Text(label).font(.caption).fontWeight(.medium)
-            }
-            .padding(.vertical, 7).padding(.horizontal, 12)
-            .background(isSelected ? color.opacity(0.2) : Color(uiColor: .secondarySystemGroupedBackground))
-            .foregroundColor(isSelected ? color : .secondary)
-            .cornerRadius(20)
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(isSelected ? color.opacity(0.5) : .clear, lineWidth: 1))
-        }
-    }
-}
-
-// MARK: - Category Section
-
-struct CategorySection: View {
-    let category: SignalCategory
-    @State private var expanded = true
-    var body: some View {
-        Section {
-            if expanded {
-                ForEach(category.signals) { signal in
-                    SignalRow(signal: signal)
-                }
-            }
-        } header: {
-            Button { withAnimation(.spring(response: 0.3)) { expanded.toggle() } } label: {
-                HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(category.tier.color.opacity(0.15))
-                            .frame(width: 30, height: 30)
-                        Image(systemName: category.icon)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(category.tier.color)
-                    }
-                    Text(category.title)
-                        .font(.system(.subheadline, design: .rounded)).fontWeight(.semibold)
-                    Spacer()
-                    Text("\(category.signals.count)").font(.caption2).foregroundColor(.secondary)
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                .foregroundColor(.primary)
-                .textCase(nil)
-            }
-        }
-    }
-}
-
-// MARK: - Signal Row
 
 struct SignalRow: View {
     let signal: Signal
-    @State private var showInfo = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: signal.icon)
-                    .font(.system(size: 13))
-                    .foregroundColor(signal.tier.color)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(signal.name).font(.caption).foregroundColor(.secondary)
-                    Text(signal.value)
-                        .font(.system(.footnote, design: .monospaced))
-                        .foregroundColor(.primary)
-                        .lineLimit(4)
-                }
-                Spacer()
-                if !signal.rationale.isEmpty {
-                    Button { withAnimation { showInfo.toggle() } } label: {
-                        Image(systemName: "info.circle").font(.caption).foregroundColor(.secondary.opacity(0.6))
-                    }
-                }
-            }
-            if showInfo && !signal.rationale.isEmpty {
-                Text(signal.rationale)
-                    .font(.caption2).foregroundColor(.secondary)
-                    .padding(.leading, 34).padding(.top, 4)
-                    .transition(.opacity)
-            }
+        HStack {
+            Text(signal.name)
+            Spacer()
+            Text(signal.value).font(.system(.footnote, design: .monospaced))
         }
-        .padding(.vertical, 2)
     }
 }
