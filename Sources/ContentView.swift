@@ -5,14 +5,16 @@ import CoreMotion
 import AVFoundation
 import WebKit
 import Metal
-import Darwin
+import Photos
+import Contacts
+import EventKit
 
 // MARK: - Models
 
 enum Tier: String, CaseIterable {
-    case passive     = "Passiv"
+    case passive      = "Passiv"
     case permissioned = "İcazə lazım"
-    case advanced    = "Gizli"
+    case advanced     = "Gizli"
 
     var icon: String {
         switch self {
@@ -21,20 +23,11 @@ enum Tier: String, CaseIterable {
         case .advanced:     return "cpu"
         }
     }
-
     var color: Color {
         switch self {
         case .passive:      return Color(hex: "4ADE80")
         case .permissioned: return Color(hex: "FBBF24")
         case .advanced:     return Color(hex: "F87171")
-        }
-    }
-
-    var description: String {
-        switch self {
-        case .passive:      return "Heç bir icazə olmadan oxunur"
-        case .permissioned: return "İOS icazəsi tələb edir"
-        case .advanced:     return "Gizli yan kanal metodları"
         }
     }
 }
@@ -56,307 +49,318 @@ struct SignalCategory: Identifiable {
     var signals: [Signal]
 }
 
-// MARK: - Color Extension
-
 extension Color {
     init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let r = Double((int >> 16) & 0xFF) / 255
-        let g = Double((int >> 8) & 0xFF) / 255
-        let b = Double(int & 0xFF) / 255
-        self.init(red: r, green: g, blue: b)
+        let h = hex.trimmingCharacters(in: .alphanumerics.inverted)
+        var v: UInt64 = 0
+        Scanner(string: h).scanHexInt64(&v)
+        self.init(red: Double((v>>16)&0xFF)/255,
+                  green: Double((v>>8)&0xFF)/255,
+                  blue: Double(v&0xFF)/255)
     }
 }
 
-// MARK: - Signal Collectors
+// MARK: - Passive
 
 struct PassiveCollector {
-    static func collectDevice() -> SignalCategory {
-        let device = UIDevice.current
-        device.isBatteryMonitoringEnabled = true
+    static func collectAll() -> [SignalCategory] {
+        [device(), screen(), locale(), network(), audio(), gpu(), motion()]
+    }
 
-        let batteryState: String
-        switch device.batteryState {
-        case .charging:  batteryState = "Şarj olunur ⚡"
-        case .full:      batteryState = "Dolu 🔋"
-        case .unplugged: batteryState = "Batareya"
-        default:         batteryState = "Bilinmir"
+    static func device() -> SignalCategory {
+        let dev = UIDevice.current
+        dev.isBatteryMonitoringEnabled = true
+        let batt = dev.batteryLevel >= 0 ? String(format: "%.0f%%", dev.batteryLevel * 100) : "?"
+        let state: String
+        switch dev.batteryState {
+        case .charging:  state = "Şarj olunur ⚡"
+        case .full:      state = "Dolu"
+        case .unplugged: state = "Batareya"
+        default:         state = "Bilinmir"
         }
-
-        let batteryLevel = device.batteryLevel >= 0
-            ? String(format: "%.0f%%", device.batteryLevel * 100)
-            : "?"
-
-        return SignalCategory(title: "Cihaz", icon: "iphone", tier: .passive, signals: [
-            Signal(name: "Model", value: device.model,
-                   rationale: "Cihaz növü (iPhone, iPad)", icon: "iphone", tier: .passive),
-            Signal(name: "Ad", value: device.name,
-                   rationale: "Cihazın adı — çox vaxt sahibinin adını ehtiva edir", icon: "person.crop.circle", tier: .passive),
-            Signal(name: "iOS", value: device.systemVersion,
-                   rationale: "Əməliyyat sistemi versiyası", icon: "gear", tier: .passive),
-            Signal(name: "CPU nüvəsi", value: "\(ProcessInfo.processInfo.processorCount)",
-                   rationale: "Görünən CPU nüvəsi sayı", icon: "cpu", tier: .passive),
-            Signal(name: "RAM", value: ramString(),
-                   rationale: "Fiziki yaddaş həcmi", icon: "memorychip", tier: .passive),
-            Signal(name: "Disk (cəmi)", value: diskTotal(),
-                   rationale: "Cihazın ümumi yaddaşı", icon: "internaldrive", tier: .passive),
-            Signal(name: "Disk (boş)", value: diskFree(),
-                   rationale: "İstifadə edilməmiş yaddaş", icon: "internaldrive.fill", tier: .passive),
-            Signal(name: "Batareya", value: "\(batteryLevel) · \(batteryState)",
-                   rationale: "Şarj səviyyəsi və vəziyyəti", icon: "battery.75", tier: .passive),
-            Signal(name: "Sistem uptime", value: uptimeStr(),
-                   rationale: "Son yenidən başlamadan keçən vaxt", icon: "clock", tier: .passive),
-            Signal(name: "İlk aktivasiya", value: firstActivation(),
-                   rationale: "Bu proqramın ilk işə salınma tarixi (Keychain-də saxlanılır)", icon: "calendar.badge.clock", tier: .passive),
+        return cat("Cihaz", "iphone", .passive, [
+            s("Model",         dev.model,                                   "Cihaz növü",                       "iphone"),
+            s("Ad",            dev.name,                                    "Sahibin adını ehtiva edə bilər",   "person.crop.circle"),
+            s("iOS",           dev.systemVersion,                           "Əməliyyat sistemi versiyası",      "gear"),
+            s("CPU nüvəsi",    "\(ProcessInfo.processInfo.processorCount)", "Görünən CPU nüvəsi sayı",          "cpu"),
+            s("RAM",           ram(),                                       "Fiziki yaddaş həcmi",              "memorychip"),
+            s("Disk (cəmi)",   diskTotal(),                                 "Ümumi yaddaş",                     "internaldrive"),
+            s("Disk (boş)",    diskFree(),                                  "Boş yaddaş",                       "internaldrive.fill"),
+            s("Batareya",      "\(batt) · \(state)",                       "Şarj səviyyəsi",                   "battery.75"),
+            s("Uptime",        uptime(),                                    "Son rebootdan keçən vaxt",         "clock"),
+            s("İlk aktivasiya",firstActivation(),                           "Keychain-də saxlanılır",           "calendar.badge.clock"),
         ])
     }
 
-    static func collectScreen() -> SignalCategory {
-        let screen = UIScreen.main
-        let bounds = screen.nativeBounds
-        return SignalCategory(title: "Ekran", icon: "rectangle.on.rectangle", tier: .passive, signals: [
-            Signal(name: "Həll qabiliyyəti", value: "\(Int(bounds.width))×\(Int(bounds.height)) px",
-                   rationale: "Fiziki piksel ölçüsü", icon: "rectangle", tier: .passive),
-            Signal(name: "Miqyas", value: "\(screen.nativeScale)×",
-                   rationale: "Retina miqyas əmsalı", icon: "arrow.up.left.and.arrow.down.right", tier: .passive),
-            Signal(name: "Parlaqlıq", value: String(format: "%.0f%%", screen.brightness * 100),
-                   rationale: "Cari ekran parlaqlığı", icon: "sun.max", tier: .passive),
+    static func screen() -> SignalCategory {
+        let sc = UIScreen.main; let b = sc.nativeBounds
+        return cat("Ekran", "rectangle.on.rectangle", .passive, [
+            s("Həll qabiliyyəti", "\(Int(b.width))×\(Int(b.height)) px", "Fiziki piksel",      "rectangle"),
+            s("Miqyas",           "\(sc.nativeScale)×",                  "Retina əmsalı",      "arrow.up.left.and.arrow.down.right"),
+            s("Parlaqlıq",        String(format: "%.0f%%", sc.brightness * 100), "Cari parlaqlıq", "sun.max"),
         ])
     }
 
-    static func collectLocale() -> SignalCategory {
-        let locale = Locale.current
-        let tz = TimeZone.current
-        let offsetSec = tz.secondsFromGMT()
-        let offsetH = offsetSec / 3600
-        let offsetM = abs(offsetSec % 3600) / 60
-        let offsetStr = offsetM == 0 ? "UTC\(offsetH > 0 ? "+" : "")\(offsetH)" : "UTC+\(offsetH):\(String(format: "%02d", offsetM))"
-
-        return SignalCategory(title: "Dil və Region", icon: "globe.europe.africa", tier: .passive, signals: [
-            Signal(name: "Dil", value: Locale.preferredLanguages.first ?? "?",
-                   rationale: "Üstünlük verilən dil", icon: "globe", tier: .passive),
-            Signal(name: "Region", value: locale.region?.identifier ?? "?",
-                   rationale: "Cihazın region parametri", icon: "mappin", tier: .passive),
-            Signal(name: "Saat qurşağı", value: "\(tz.identifier) (\(offsetStr))",
-                   rationale: "Cari saat qurşağı — istifadəçinin yerini göstərə bilər", icon: "clock.badge", tier: .passive),
-            Signal(name: "Valyuta", value: locale.currency?.identifier ?? "?",
-                   rationale: "Locale-a görə valyuta kodu", icon: "banknote", tier: .passive),
-            Signal(name: "Ölçü sistemi", value: locale.measurementSystem == .metric ? "Metrik" : "Imperial",
-                   rationale: "Metrik vs imperial", icon: "ruler", tier: .passive),
+    static func locale() -> SignalCategory {
+        let l = Locale.current; let tz = TimeZone.current
+        let off = tz.secondsFromGMT(); let h = off/3600; let m = abs(off%3600)/60
+        let offStr = m == 0 ? "UTC\(h>=0 ? "+" : "")\(h)" : "UTC+\(h):\(String(format:"%02d",m))"
+        return cat("Dil & Region", "globe.europe.africa", .passive, [
+            s("Dil",           Locale.preferredLanguages.first ?? "?", "Üstünlük verilən dil",         "globe"),
+            s("Region",        l.region?.identifier ?? "?",           "Region parametri",              "mappin"),
+            s("Saat qurşağı",  "\(tz.identifier) (\(offStr))",        "Yeri göstərə bilər",            "clock.badge"),
+            s("Valyuta",       l.currency?.identifier ?? "?",         "Locale valyutası",              "banknote"),
         ])
     }
 
-    static func collectNetwork() -> SignalCategory {
-        return SignalCategory(title: "Şəbəkə", icon: "wifi", tier: .passive, signals: [
-            Signal(name: "Hostname", value: ProcessInfo.processInfo.hostName,
-                   rationale: "Lokal hostname — adətən cihaz adı ilə eynidir", icon: "network", tier: .passive),
-            Signal(name: "IP (WiFi)", value: wifiIP() ?? "Yoxdur",
-                   rationale: "Lokal şəbəkə IPv4 ünvanı", icon: "wifi.circle", tier: .passive),
+    static func network() -> SignalCategory {
+        return cat("Şəbəkə", "wifi", .passive, [
+            s("Hostname", ProcessInfo.processInfo.hostName, "Lokal hostname",    "network"),
+            s("WiFi IP",  wifiIP() ?? "Yoxdur",            "Lokal IPv4 ünvanı", "wifi.circle"),
         ])
     }
 
-    static func collectGPU() -> SignalCategory {
-        return SignalCategory(title: "Qrafika", icon: "cpu.fill", tier: .passive, signals: [
-            Signal(name: "GPU", value: gpuName(),
-                   rationale: "Metal API-nin bildirdiyi GPU adı", icon: "memorychip.fill", tier: .passive),
-        ])
-    }
-
-    static func collectAudio() -> SignalCategory {
+    static func audio() -> SignalCategory {
         let session = AVAudioSession.sharedInstance()
-        let output = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
-        return SignalCategory(title: "Səs", icon: "speaker.wave.2", tier: .passive, signals: [
-            Signal(name: "Çıxış", value: output.isEmpty ? "Yoxdur" : output,
-                   rationale: "Aktiv audio çıxış cihazı", icon: "airpodspro", tier: .passive),
-            Signal(name: "Səs səviyyəsi", value: String(format: "%.0f%%", session.outputVolume * 100),
-                   rationale: "Sistem səs həcmi", icon: "speaker.wave.3", tier: .passive),
+        let out = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
+        return cat("Səs", "speaker.wave.2", .passive, [
+            s("Çıxış",     out.isEmpty ? "Yoxdur" : out,                    "Aktiv audio çıxış",    "airpodspro"),
+            s("Həcm",      String(format: "%.0f%%", session.outputVolume * 100), "Sistem səs",      "speaker.wave.3"),
         ])
     }
 
-    // MARK: Helpers
+    static func gpu() -> SignalCategory {
+        let name = MTLCreateSystemDefaultDevice()?.name ?? "Bilinmir"
+        return cat("Qrafika", "cpu.fill", .passive, [
+            s("GPU", name, "Metal API-nin bildirdiyi GPU adı", "memorychip.fill"),
+        ])
+    }
 
-    private static func ramString() -> String {
+    static func motion() -> SignalCategory {
+        let m = CMMotionManager()
+        var accel = "Mövcud deyil"
+        if m.isAccelerometerAvailable {
+            m.startAccelerometerUpdates()
+            Thread.sleep(forTimeInterval: 0.15)
+            if let d = m.accelerometerData {
+                accel = String(format: "x=%.3f  y=%.3f  z=%.3f", d.acceleration.x, d.acceleration.y, d.acceleration.z)
+            }
+            m.stopAccelerometerUpdates()
+        }
+        return cat("Sensor", "gyroscope", .passive, [
+            s("Akselerometr", accel, "3 oxlu sürətlənmə — icazəsiz", "move.3d"),
+        ])
+    }
+
+    // Shorthand builders
+    static func cat(_ title: String, _ icon: String, _ tier: Tier, _ signals: [Signal]) -> SignalCategory {
+        SignalCategory(title: title, icon: icon, tier: tier, signals: signals)
+    }
+    static func s(_ name: String, _ value: String, _ rationale: String, _ icon: String) -> Signal {
+        Signal(name: name, value: value, rationale: rationale, icon: icon, tier: .passive)
+    }
+
+    // Helpers
+    static func ram() -> String {
         ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
     }
-
-    private static func diskTotal() -> String {
-        guard let a = try? FileManager.default.attributesOfFileSystem(forPath: "/"),
-              let v = a[.systemSize] as? Int64 else { return "?" }
+    static func diskTotal() -> String {
+        guard let a = try? FileManager.default.attributesOfFileSystem(forPath: "/"), let v = a[.systemSize] as? Int64 else { return "?" }
         return ByteCountFormatter.string(fromByteCount: v, countStyle: .file)
     }
-
-    private static func diskFree() -> String {
-        guard let a = try? FileManager.default.attributesOfFileSystem(forPath: "/"),
-              let v = a[.systemFreeSize] as? Int64 else { return "?" }
+    static func diskFree() -> String {
+        guard let a = try? FileManager.default.attributesOfFileSystem(forPath: "/"), let v = a[.systemFreeSize] as? Int64 else { return "?" }
         return ByteCountFormatter.string(fromByteCount: v, countStyle: .file)
     }
-
-    private static func uptimeStr() -> String {
+    static func uptime() -> String {
         let u = ProcessInfo.processInfo.systemUptime
-        let h = Int(u) / 3600; let m = (Int(u) % 3600) / 60
-        return "\(h) saat \(m) dəqiqə"
+        return "\(Int(u)/3600) saat \((Int(u)%3600)/60) dəq"
     }
-
     static func firstActivation() -> String {
-        let key = "dr_first_launch_v1"
-        let q: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
+        let key = "dr_first_v2"
+        let q: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrAccount as String: key, kSecReturnData as String: true,
+                                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
         var res: AnyObject?
         if SecItemCopyMatching(q as CFDictionary, &res) == errSecSuccess,
-           let d = res as? Data, let s = String(data: d, encoding: .utf8) { return s }
+           let d = res as? Data, let str = String(data: d, encoding: .utf8) { return str }
         let now = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
-        let sq: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: now.data(using: .utf8)!,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
+        let sq: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
+                                 kSecAttrAccount as String: key,
+                                 kSecValueData as String: now.data(using: .utf8)!,
+                                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
         SecItemAdd(sq as CFDictionary, nil)
-        return now + " (bu gün)"
+        return now
     }
-
-    private static func wifiIP() -> String? {
-        var address: String?
+    static func wifiIP() -> String? {
+        var addr: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0 else { return nil }
         defer { freeifaddrs(ifaddr) }
-        var ptr = ifaddr
-        while ptr != nil {
-            let interface = ptr!.pointee
-            let family = interface.ifa_addr.pointee.sa_family
-            if family == UInt8(AF_INET) {
-                let name = String(cString: interface.ifa_name)
-                if name == "en0" {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                                &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST)
-                    address = String(cString: hostname)
-                }
+        var p = ifaddr
+        while p != nil {
+            let i = p!.pointee
+            if i.ifa_addr.pointee.sa_family == UInt8(AF_INET), String(cString: i.ifa_name) == "en0" {
+                var h = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                getnameinfo(i.ifa_addr, socklen_t(i.ifa_addr.pointee.sa_len), &h, socklen_t(h.count), nil, 0, NI_NUMERICHOST)
+                addr = String(cString: h)
             }
-            ptr = interface.ifa_next
+            p = i.ifa_next
         }
-        return address
-    }
-
-    private static func gpuName() -> String {
-        return MTLCreateSystemDefaultDevice()?.name ?? "Bilinmir"
+        return addr
     }
 }
 
+// MARK: - Permission Collector
+
+struct PermissionCollector {
+    static func collectAll() -> [SignalCategory] {
+        [photos(), contacts(), calendar()]
+    }
+
+    static func photos() -> SignalCategory {
+        func ps(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
+            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
+        }
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        switch status {
+        case .authorized, .limited:
+            let photos = PHAsset.fetchAssets(with: .image, options: nil).count
+            let videos = PHAsset.fetchAssets(with: .video, options: nil).count
+            let albums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil).count
+            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned, signals: [
+                ps("Şəkillər",  "\(photos)",                              "Foto sayı",              "photo"),
+                ps("Videolar",  "\(videos)",                              "Video sayı",             "video"),
+                ps("Albumlar",  "\(albums)",                              "Albom sayı",             "rectangle.stack"),
+                ps("İcazə",     status == .limited ? "Məhdud" : "Tam",   "İcazə növü",             "checkmark.shield"),
+            ])
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { _ in }
+            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned,
+                                  signals: [ps("Status", "İcazə verilmədi — yenidən bas", "Tələb edilir", "questionmark.circle")])
+        default:
+            return SignalCategory(title: "Fotolar", icon: "photo.stack", tier: .permissioned,
+                                  signals: [ps("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
+        }
+    }
+
+    static func contacts() -> SignalCategory {
+        func cs(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
+            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
+        }
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        switch status {
+        case .authorized:
+            let store = CNContactStore()
+            let keys = [CNContactGivenNameKey, CNContactPhoneNumbersKey, CNContactEmailAddressesKey] as [CNKeyDescriptor]
+            var total = 0; var withPhone = 0; var withEmail = 0
+            if let contacts = try? store.unifiedContacts(matching: NSPredicate(value: true), keysToFetch: keys) {
+                total = contacts.count
+                withPhone = contacts.filter { !$0.phoneNumbers.isEmpty }.count
+                withEmail = contacts.filter { !$0.emailAddresses.isEmpty }.count
+            }
+            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned, signals: [
+                cs("Cəmi",          "\(total)",     "Ümumi kontakt sayı",      "person.2"),
+                cs("Telefonlu",     "\(withPhone)", "Nömrəsi olan kontaktlar", "phone"),
+                cs("Emailli",       "\(withEmail)", "E-maili olan kontaktlar", "envelope"),
+            ])
+        case .notDetermined:
+            CNContactStore().requestAccess(for: .contacts) { _, _ in }
+            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned,
+                                  signals: [cs("Status", "İcazə verilmədi — yenidən bas", "", "questionmark.circle")])
+        default:
+            return SignalCategory(title: "Kontaktlar", icon: "person.2", tier: .permissioned,
+                                  signals: [cs("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
+        }
+    }
+
+    static func calendar() -> SignalCategory {
+        func es(_ n: String, _ v: String, _ r: String, _ i: String) -> Signal {
+            Signal(name: n, value: v, rationale: r, icon: i, tier: .permissioned)
+        }
+        let store = EKEventStore()
+        let status = EKEventStore.authorizationStatus(for: .event)
+        switch status {
+        case .authorized, .fullAccess:
+            let cals = store.calendars(for: .event)
+            let remCals = store.calendars(for: .reminder)
+            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned, signals: [
+                es("Təqvim sayı",   "\(cals.count)",    "Bütün hesablar üzrə",  "calendar"),
+                es("Xatırlatmalar", "\(remCals.count)", "Xatırlatma siyahıları","list.bullet"),
+            ])
+        case .notDetermined:
+            store.requestFullAccessToEvents { _, _ in }
+            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned,
+                                  signals: [es("Status", "İcazə verilmədi — yenidən bas", "", "questionmark.circle")])
+        default:
+            return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned,
+                                  signals: [es("Status", "İcazə verilməyib", "Parametrlərdən açın", "xmark.circle")])
+        }
+    }
+}
+
+// MARK: - Advanced Collector
+
 struct AdvancedCollector {
-    static func collectInstalledApps() -> SignalCategory {
-        let apps: [(String, String)] = [
-            ("WhatsApp",    "whatsapp://"),
-            ("Telegram",    "tg://"),
-            ("Instagram",   "instagram://"),
-            ("X (Twitter)", "twitter://"),
-            ("TikTok",      "tiktok://"),
-            ("Discord",     "discord://"),
-            ("YouTube",     "youtube://"),
-            ("Netflix",     "nflx://"),
-            ("Snapchat",    "snapchat://"),
-            ("Gmail",       "googlegmail://"),
-            ("Google Maps", "comgooglemaps://"),
-            ("Spotify",     "spotify://"),
-            ("ProtonMail",  "protonmail://"),
-            ("GitHub",      "github://"),
-            ("Notion",      "notion://"),
-            ("Signal",      "sgnl://"),
-            ("PayPal",      "paypal://"),
-            ("Uber",        "uber://"),
-            ("LinkedIn",    "linkedin://"),
-            ("Pinterest",   "pinterest://"),
+    static func collectAll() -> [SignalCategory] {
+        [apps(), webView()]
+    }
+
+    static func apps() -> SignalCategory {
+        let list: [(String, String)] = [
+            ("WhatsApp","whatsapp://"), ("Telegram","tg://"), ("Instagram","instagram://"),
+            ("X","twitter://"), ("TikTok","tiktok://"), ("Discord","discord://"),
+            ("YouTube","youtube://"), ("Netflix","nflx://"), ("Snapchat","snapchat://"),
+            ("Gmail","googlegmail://"), ("Google Maps","comgooglemaps://"), ("Spotify","spotify://"),
+            ("ProtonMail","protonmail://"), ("GitHub","github://"), ("Signal","sgnl://"),
+            ("Notion","notion://"), ("PayPal","paypal://"), ("LinkedIn","linkedin://"),
+            ("Uber","uber://"), ("Pinterest","pinterest://"),
         ]
-
-        let installed = apps.filter {
-            UIApplication.shared.canOpenURL(URL(string: $0.1)!)
-        }.map { $0.0 }
-
-        let value = installed.isEmpty
-            ? "Heç biri tapılmadı"
-            : "\(installed.count)/\(apps.count): \(installed.joined(separator: ", "))"
-
+        let found = list.filter { UIApplication.shared.canOpenURL(URL(string: $0.1)!) }.map { $0.0 }
+        let val = found.isEmpty ? "Heç biri tapılmadı" : "\(found.count)/\(list.count): \(found.joined(separator: ", "))"
         return SignalCategory(title: "Quraşdırılmış Tətbiqlər", icon: "square.grid.2x2", tier: .advanced, signals: [
-            Signal(name: "Aşkar edilənlər", value: value,
-                   rationale: "canOpenURL() ilə URL sxeması yoxlanılır — icazəsiz", icon: "apps.iphone", tier: .advanced),
-            Signal(name: "Yüklənmə sayı", value: installCount(),
-                   rationale: "Keychain silinmə zamanı təmizlənmir — yenidən yükləmə sayını izləyir", icon: "arrow.down.circle", tier: .advanced),
+            Signal(name: "Tapılanlar",    value: val,            rationale: "canOpenURL() — icazəsiz", icon: "apps.iphone",      tier: .advanced),
+            Signal(name: "Yüklənmə sayı",value: installCount(), rationale: "Keychain silmədə qalır", icon: "arrow.down.circle", tier: .advanced),
         ])
     }
 
-    static func collectWebFingerprint() -> SignalCategory {
+    static func webView() -> SignalCategory {
         return SignalCategory(title: "WebView Barmaq İzi", icon: "safari", tier: .advanced, signals: [
-            Signal(name: "User Agent", value: webViewUA(),
-                   rationale: "Gizli WKWebView-dan oxunan UA — cihaz sinfi və WebKit versiyasını aşkar edir", icon: "globe.badge.chevron.backward", tier: .advanced),
+            Signal(name: "User Agent", value: getUA(),
+                   rationale: "Gizli WKWebView — cihaz sinfi aşkar edilir", icon: "globe.badge.chevron.backward", tier: .advanced),
         ])
     }
 
     private static func installCount() -> String {
-        let key = "dr_install_count_v1"
-        let q: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-        var res: AnyObject?
-        var count = 1
+        let key = "dr_install_count_v2"
+        let q: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrAccount as String: key, kSecReturnData as String: true,
+                                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
+        var res: AnyObject?; var count = 1
         if SecItemCopyMatching(q as CFDictionary, &res) == errSecSuccess,
-           let d = res as? Data,
-           let s = String(data: d, encoding: .utf8),
-           let n = Int(s) {
-            count = n + 1
-            SecItemDelete(q as CFDictionary)
+           let d = res as? Data, let str = String(data: d, encoding: .utf8), let n = Int(str) {
+            count = n + 1; SecItemDelete(q as CFDictionary)
         }
-        let sq: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecValueData as String: "\(count)".data(using: .utf8)!,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
+        let sq: [String:Any] = [kSecClass as String: kSecClassGenericPassword,
+                                 kSecAttrAccount as String: key,
+                                 kSecValueData as String: "\(count)".data(using: .utf8)!,
+                                 kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
         SecItemAdd(sq as CFDictionary, nil)
         return "\(count) dəfə"
     }
 
-    private static func webViewUA() -> String {
-        // Sync UA fetch via semaphore
+    private static func getUA() -> String {
         var ua = "Oxunmadı"
         let sem = DispatchSemaphore(value: 0)
         DispatchQueue.main.async {
-            let wv = WKWebView()
-            wv.evaluateJavaScript("navigator.userAgent") { result, _ in
-                if let s = result as? String { ua = s }
+            let wv = WKWebView(frame: .zero)
+            wv.evaluateJavaScript("navigator.userAgent") { r, _ in
+                if let str = r as? String { ua = str }
                 sem.signal()
             }
         }
-        sem.wait()
+        _ = sem.wait(timeout: .now() + 3)
         return ua
-    }
-}
-
-struct MotionCollector {
-    static func collect() -> SignalCategory {
-        let manager = CMMotionManager()
-        var accel = "İcazə yoxdur"
-        if manager.isAccelerometerAvailable {
-            manager.startAccelerometerUpdates()
-            Thread.sleep(forTimeInterval: 0.1)
-            if let d = manager.accelerometerData {
-                accel = String(format: "x=%.3f  y=%.3f  z=%.3f", d.acceleration.x, d.acceleration.y, d.acceleration.z)
-            }
-            manager.stopAccelerometerUpdates()
-        }
-
-        return SignalCategory(title: "Hərəkət Sensorları", icon: "gyroscope", tier: .passive, signals: [
-            Signal(name: "Akselerometr", value: accel,
-                   rationale: "3 oxlu sürətlənmə — icazəsiz oxunur", icon: "move.3d", tier: .passive),
-        ])
     }
 }
 
@@ -369,28 +373,19 @@ class RadarViewModel: ObservableObject {
     @Published var isLoading = false
 
     var filtered: [SignalCategory] {
-        guard let t = selectedTier else { return categories }
-        return categories.filter { $0.tier == t }
+        selectedTier == nil ? categories : categories.filter { $0.tier == selectedTier }
     }
-
-    var totalSignals: Int { categories.reduce(0) { $0 + $1.signals.count } }
+    func count(_ tier: Tier) -> Int {
+        categories.filter { $0.tier == tier }.flatMap { $0.signals }.count
+    }
 
     func generate() {
         isLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let cats: [SignalCategory] = [
-                PassiveCollector.collectDevice(),
-                PassiveCollector.collectScreen(),
-                PassiveCollector.collectLocale(),
-                PassiveCollector.collectNetwork(),
-                PassiveCollector.collectAudio(),
-                PassiveCollector.collectGPU(),
-                MotionCollector.collect(),
-                AdvancedCollector.collectInstalledApps(),
-                AdvancedCollector.collectWebFingerprint(),
-            ]
-            let fmt = DateFormatter()
-            fmt.dateFormat = "dd.MM.yyyy · HH:mm:ss"
+            var cats = PassiveCollector.collectAll()
+            cats += PermissionCollector.collectAll()
+            cats += AdvancedCollector.collectAll()
+            let fmt = DateFormatter(); fmt.dateFormat = "dd.MM.yyyy · HH:mm:ss"
             DispatchQueue.main.async {
                 self.categories = cats
                 self.generatedAt = fmt.string(from: Date())
@@ -400,7 +395,7 @@ class RadarViewModel: ObservableObject {
     }
 }
 
-// MARK: - Views
+// MARK: - App Root
 
 struct ContentView: View {
     @StateObject private var vm = RadarViewModel()
@@ -409,11 +404,8 @@ struct ContentView: View {
         NavigationView {
             ZStack {
                 Color(uiColor: .systemGroupedBackground).ignoresSafeArea()
-
                 if vm.isLoading {
                     LoadingView()
-                } else if vm.categories.isEmpty {
-                    WelcomeView { vm.generate() }
                 } else {
                     MainList(vm: vm)
                 }
@@ -421,12 +413,9 @@ struct ContentView: View {
             .navigationTitle("DeviceRadar")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                if !vm.categories.isEmpty {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(action: { vm.generate() }) {
-                            Image(systemName: "arrow.clockwise")
-                                .fontWeight(.semibold)
-                        }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { vm.generate() } label: {
+                        Image(systemName: "arrow.clockwise").fontWeight(.semibold)
                     }
                 }
             }
@@ -435,315 +424,183 @@ struct ContentView: View {
     }
 }
 
-// MARK: Welcome
-
-struct WelcomeView: View {
-    let onTap: () -> Void
-
-    var body: some View {
-        VStack(spacing: 32) {
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(
-                        colors: [Color(hex: "4ADE80").opacity(0.2), Color(hex: "F87171").opacity(0.2)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 120, height: 120)
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 48, weight: .thin))
-                    .foregroundStyle(LinearGradient(
-                        colors: [Color(hex: "4ADE80"), Color(hex: "FBBF24")],
-                        startPoint: .top, endPoint: .bottom))
-            }
-
-            VStack(spacing: 8) {
-                Text("DeviceRadar")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                Text("Cihazın nəyi ifşa etdiyini gör")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-
-            Button(action: onTap) {
-                HStack(spacing: 10) {
-                    Image(systemName: "play.fill")
-                    Text("Analiz et")
-                        .fontWeight(.semibold)
-                }
-                .frame(maxWidth: 220)
-                .padding(.vertical, 14)
-                .background(
-                    LinearGradient(colors: [Color(hex: "4ADE80"), Color(hex: "22D3EE")],
-                                   startPoint: .leading, endPoint: .trailing)
-                )
-                .foregroundColor(.black)
-                .cornerRadius(14)
-                .shadow(color: Color(hex: "4ADE80").opacity(0.4), radius: 12, y: 6)
-            }
-        }
-        .padding()
-    }
-}
-
-// MARK: Loading
+// MARK: - Loading View
 
 struct LoadingView: View {
-    @State private var angle = 0.0
-
+    @State private var rot = 0.0
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             ZStack {
-                Circle()
-                    .stroke(Color.secondary.opacity(0.15), lineWidth: 3)
-                    .frame(width: 60, height: 60)
-                Circle()
-                    .trim(from: 0, to: 0.25)
-                    .stroke(
-                        LinearGradient(colors: [Color(hex: "4ADE80"), Color(hex: "22D3EE")],
-                                       startPoint: .leading, endPoint: .trailing),
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                    )
-                    .frame(width: 60, height: 60)
-                    .rotationEffect(.degrees(angle))
-                    .onAppear {
-                        withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                            angle = 360
-                        }
-                    }
+                Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 3).frame(width: 56, height: 56)
+                Circle().trim(from: 0, to: 0.25)
+                    .stroke(LinearGradient(colors: [Color(hex:"4ADE80"), Color(hex:"22D3EE")],
+                                           startPoint: .leading, endPoint: .trailing),
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .frame(width: 56, height: 56)
+                    .rotationEffect(.degrees(rot))
+                    .onAppear { withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { rot = 360 } }
             }
-            Text("Siqnallar toplanır...")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+            Text("Siqnallar toplanır...").font(.subheadline).foregroundColor(.secondary)
         }
     }
 }
 
-// MARK: Main List
+// MARK: - Main List
 
 struct MainList: View {
     @ObservedObject var vm: RadarViewModel
-
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                // Header stats
-                StatsHeader(vm: vm)
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    .padding(.bottom, 16)
-
-                // Tier filter
-                TierFilter(selected: $vm.selectedTier)
-                    .padding(.horizontal)
-                    .padding(.bottom, 16)
-
-                // Categories
-                ForEach(vm.filtered) { cat in
-                    CategoryCard(category: cat)
-                        .padding(.horizontal)
-                        .padding(.bottom, 12)
+        List {
+            Section {
+                HStack(spacing: 10) {
+                    StatPill(value: vm.count(.passive),      label: "Passiv",  color: Tier.passive.color)
+                    StatPill(value: vm.count(.permissioned), label: "İcazəli", color: Tier.permissioned.color)
+                    StatPill(value: vm.count(.advanced),     label: "Gizli",   color: Tier.advanced.color)
                 }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
 
-                // Footer
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        FilterChip(label: "Hamısı", icon: "square.grid.2x2", color: .primary,
+                                   isSelected: vm.selectedTier == nil) { vm.selectedTier = nil }
+                        ForEach(Tier.allCases, id: \.self) { t in
+                            FilterChip(label: t.rawValue, icon: t.icon, color: t.color,
+                                       isSelected: vm.selectedTier == t) {
+                                vm.selectedTier = vm.selectedTier == t ? nil : t
+                            }
+                        }
+                    }.padding(.vertical, 4)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+
+            ForEach(vm.filtered) { cat in
+                CategorySection(category: cat)
+            }
+
+            Section {
                 Text("Tarix: \(vm.generatedAt)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 20)
+                    .font(.caption2).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowBackground(Color.clear)
             }
         }
+        .listStyle(.insetGrouped)
     }
 }
 
-// MARK: Stats Header
-
-struct StatsHeader: View {
-    @ObservedObject var vm: RadarViewModel
-
-    var passiveCount: Int { vm.categories.filter { $0.tier == .passive }.flatMap { $0.signals }.count }
-    var permCount: Int    { vm.categories.filter { $0.tier == .permissioned }.flatMap { $0.signals }.count }
-    var advCount: Int     { vm.categories.filter { $0.tier == .advanced }.flatMap { $0.signals }.count }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            StatPill(value: passiveCount, label: "Passiv", color: Tier.passive.color)
-            StatPill(value: permCount,    label: "İcazəli", color: Tier.permissioned.color)
-            StatPill(value: advCount,     label: "Gizli",   color: Tier.advanced.color)
-        }
-    }
-}
+// MARK: - Stat Pill
 
 struct StatPill: View {
-    let value: Int
-    let label: String
-    let color: Color
-
+    let value: Int; let label: String; let color: Color
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 0) {
-                Text("\(value)")
-                    .font(.system(.headline, design: .rounded))
-                    .fontWeight(.bold)
-                Text(label)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                Text("\(value)").font(.system(.headline, design: .rounded)).fontWeight(.bold)
+                Text(label).font(.caption2).foregroundColor(.secondary)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
+        .padding(.vertical, 10).padding(.horizontal, 12)
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .cornerRadius(12)
     }
 }
 
-// MARK: Tier Filter
-
-struct TierFilter: View {
-    @Binding var selected: Tier?
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                FilterChip(label: "Hamısı", icon: "square.grid.2x2", color: .primary,
-                           isSelected: selected == nil) { selected = nil }
-                ForEach(Tier.allCases, id: \.self) { tier in
-                    FilterChip(label: tier.rawValue, icon: tier.icon, color: tier.color,
-                               isSelected: selected == tier) {
-                        selected = selected == tier ? nil : tier
-                    }
-                }
-            }
-        }
-    }
-}
+// MARK: - Filter Chip
 
 struct FilterChip: View {
-    let label: String
-    let icon: String
-    let color: Color
-    let isSelected: Bool
-    let action: () -> Void
-
+    let label: String; let icon: String; let color: Color; let isSelected: Bool; let action: () -> Void
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon).font(.caption)
                 Text(label).font(.caption).fontWeight(.medium)
             }
-            .padding(.vertical, 7)
-            .padding(.horizontal, 12)
+            .padding(.vertical, 7).padding(.horizontal, 12)
             .background(isSelected ? color.opacity(0.2) : Color(uiColor: .secondarySystemGroupedBackground))
             .foregroundColor(isSelected ? color : .secondary)
             .cornerRadius(20)
-            .overlay(RoundedRectangle(cornerRadius: 20)
-                .stroke(isSelected ? color.opacity(0.5) : Color.clear, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(isSelected ? color.opacity(0.5) : .clear, lineWidth: 1))
         }
     }
 }
 
-// MARK: Category Card
+// MARK: - Category Section
 
-struct CategoryCard: View {
+struct CategorySection: View {
     let category: SignalCategory
     @State private var expanded = true
-
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            Button(action: { withAnimation(.spring(response: 0.3)) { expanded.toggle() } }) {
-                HStack(spacing: 12) {
+        Section {
+            if expanded {
+                ForEach(category.signals) { signal in
+                    SignalRow(signal: signal)
+                }
+            }
+        } header: {
+            Button { withAnimation(.spring(response: 0.3)) { expanded.toggle() } } label: {
+                HStack(spacing: 10) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: 7)
                             .fill(category.tier.color.opacity(0.15))
-                            .frame(width: 34, height: 34)
+                            .frame(width: 30, height: 30)
                         Image(systemName: category.icon)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(category.tier.color)
                     }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(category.title)
-                            .font(.system(.subheadline, design: .rounded))
-                            .fontWeight(.semibold)
-                            .foregroundColor(.primary)
-                        Text("\(category.signals.count) siqnal · \(category.tier.rawValue)")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-
+                    Text(category.title)
+                        .font(.system(.subheadline, design: .rounded)).fontWeight(.semibold)
                     Spacer()
-
+                    Text("\(category.signals.count)").font(.caption2).foregroundColor(.secondary)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        .font(.caption2).foregroundColor(.secondary)
                 }
-                .padding(14)
-            }
-
-            if expanded {
-                Divider().padding(.horizontal, 14)
-
-                VStack(spacing: 0) {
-                    ForEach(Array(category.signals.enumerated()), id: \.element.id) { idx, signal in
-                        SignalRow(signal: signal)
-                        if idx < category.signals.count - 1 {
-                            Divider()
-                                .padding(.leading, 46)
-                        }
-                    }
-                }
-                .padding(.bottom, 4)
+                .foregroundColor(.primary)
+                .textCase(nil)
             }
         }
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
-        .cornerRadius(16)
-        .shadow(color: .black.opacity(0.04), radius: 8, y: 2)
     }
 }
 
-// MARK: Signal Row
+// MARK: - Signal Row
 
 struct SignalRow: View {
     let signal: Signal
-    @State private var showRationale = false
-
+    @State private var showInfo = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: signal.icon)
                     .font(.system(size: 13))
                     .foregroundColor(signal.tier.color)
-                    .frame(width: 26)
-
+                    .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(signal.name)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Text(signal.name).font(.caption).foregroundColor(.secondary)
                     Text(signal.value)
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundColor(.primary)
-                        .lineLimit(3)
+                        .lineLimit(4)
                 }
-
                 Spacer()
-
-                Button(action: { withAnimation { showRationale.toggle() } }) {
-                    Image(systemName: "info.circle")
-                        .font(.caption)
-                        .foregroundColor(.secondary.opacity(0.6))
+                if !signal.rationale.isEmpty {
+                    Button { withAnimation { showInfo.toggle() } } label: {
+                        Image(systemName: "info.circle").font(.caption).foregroundColor(.secondary.opacity(0.6))
+                    }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            if showRationale {
+            if showInfo && !signal.rationale.isEmpty {
                 Text(signal.rationale)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 50)
-                    .padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .font(.caption2).foregroundColor(.secondary)
+                    .padding(.leading, 34).padding(.top, 4)
+                    .transition(.opacity)
             }
         }
+        .padding(.vertical, 2)
     }
 }
