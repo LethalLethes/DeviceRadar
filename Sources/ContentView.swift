@@ -289,7 +289,11 @@ struct PermissionCollector {
                 es("Xatırlatmalar", "\(remCals.count)", "Xatırlatma siyahıları","list.bullet"),
             ])
         case .notDetermined:
-            store.requestFullAccessToEvents { _, _ in }
+            if #available(iOS 17.0, *) {
+                store.requestFullAccessToEvents { _, _ in }
+            } else {
+                store.requestAccess(to: .event) { _, _ in }
+            }
             return SignalCategory(title: "Təqvim", icon: "calendar", tier: .permissioned,
                                   signals: [es("Status", "İcazə verilmədi — yenidən bas", "", "questionmark.circle")])
         default:
